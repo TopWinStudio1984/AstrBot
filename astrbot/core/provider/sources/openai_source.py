@@ -56,6 +56,7 @@ class ProviderOpenAIOfficial(Provider):
             models_str = []
             models = await self.client.models.list()
             models = models.data
+            models = sorted(models, key=lambda x: x.id)
             for model in models:
                 models_str.append(model.id)
             return models_str
