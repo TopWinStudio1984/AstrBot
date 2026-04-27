@@ -1,11 +1,11 @@
 aiohttp==3.13.3
 akshare==1.16.77
-astrbot==3.5.18
 beautifulsoup4==4.13.4
 cryptography==45.0.5
 emoji==2.14.1
 feedparser==6.0.11
 pandas==2.3.0
 plotly==6.0.1
-Requests==2.32.4
+requests==2.32.4
 yahoo_fin==0.8.9.1
+pydantic>=2.10.3,<2.14
