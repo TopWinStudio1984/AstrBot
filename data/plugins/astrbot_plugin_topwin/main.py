@@ -117,18 +117,55 @@ class TopwinToolsPlugin(Star):
 
         return None, None
 
-    def clear_edit_image_state(self, user_id: str):
-        USER_STATES.pop(user_id, None)
-        USER_IMAGE_FILES.pop(user_id, None)
-        USER_LAST_IMAGES.pop(user_id, None)
+    def clear_edit_image_state(self, state_key: str):
+        USER_STATES.pop(state_key, None)
+        USER_IMAGE_FILES.pop(state_key, None)
+        USER_LAST_IMAGES.pop(state_key, None)
 
-    async def expire_edit_image_state(self, event: AstrMessageEvent, user_id: str, timestamp: float):
+    def get_edit_image_state_key(self, event: AstrMessageEvent) -> str:
+        session_id = event.get_session_id().strip()
+        if session_id:
+            return session_id
+        sender_id = event.get_sender_id().strip()
+        if sender_id:
+            return sender_id
+        return "default"
+
+    async def expire_edit_image_state(self, event: AstrMessageEvent, state_key: str, timestamp: float):
         await asyncio.sleep(30)
-        if USER_STATES.get(user_id) != timestamp:
+        if USER_STATES.get(state_key) != timestamp:
             return
 
-        self.clear_edit_image_state(user_id)
+        self.clear_edit_image_state(state_key)
         await event.send(event.plain_result("图生图已取消，请重新上传图片后再试。"))
+
+    async def process_edit_image_prompt(self, event: AstrMessageEvent, prompt: str):
+        state_key = self.get_edit_image_state_key(event)
+        if state_key not in USER_STATES:
+            return
+
+        if not prompt:
+            yield event.plain_result("请输入图像编辑指令，例如：图生图 把背景改成海边。")
+            event.stop_event()
+            return
+
+        image_file = USER_LAST_IMAGES.get(state_key)
+        if not image_file:
+            self.clear_edit_image_state(state_key)
+            yield event.plain_result("未找到待处理的图片，请重新上传图片后再试。")
+            event.stop_event()
+            return
+
+        print("收到图生图指令:", prompt)
+
+        chain, image_paths = edit_image_with_openai(self.image_cfg, image_file, prompt)
+        print("图生图生成完成:", image_paths)
+        if image_paths:
+            USER_LAST_IMAGES[state_key] = image_paths[0]
+
+        self.clear_edit_image_state(state_key)
+        yield event.chain_result(cast(list[BaseMessageComponent], chain))
+        event.stop_event()
 
     async def render_common_image(self, event: AstrMessageEvent, prompt: str):
         image_cfg = dict(self.image_cfg)
@@ -283,9 +320,15 @@ class TopwinToolsPlugin(Star):
 # ***************************************************************************************************
 # 图生图的处理部分
 # ***************************************************************************************************
+    @filter.command("图生图")
+    async def edit_image_command(self, event: AstrMessageEvent, prompt: str = ""):
+        async for result in self.process_edit_image_prompt(event, prompt):
+            yield result
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def handle_image_edit_request(self, event: AstrMessageEvent):
-        user_id = event.get_sender_id()
+        print("handle_image_edit_request")
+        state_key = self.get_edit_image_state_key(event)
 
         image_file = ""
         for component in event.message_obj.message:
@@ -293,49 +336,31 @@ class TopwinToolsPlugin(Star):
                 image_file = component.file or ""
                 break
         
-        print("image_file1")
         if image_file:
             image_file = move_image(image_file, self.editimage_dir)
-            print(image_file[:100])
+            print("收到图像文件:", image_file[:100])
             timestamp = asyncio.get_running_loop().time()
-            USER_STATES[user_id] = timestamp
-            USER_IMAGE_FILES[user_id] = image_file
-            USER_LAST_IMAGES[user_id] = image_file
+            USER_STATES[state_key] = timestamp
+            USER_IMAGE_FILES[state_key] = image_file
+            USER_LAST_IMAGES[state_key] = image_file
 
             prefixes_text = " / ".join(self.get_edit_image_command_prefixes())
             yield event.plain_result(
                 f"已收到图片，请在30秒内发送“前缀 处理命令”进行图生图，例如：{prefixes_text} 把背景改成海边。"
             )
-            asyncio.create_task(self.expire_edit_image_state(event, user_id, timestamp))
+            asyncio.create_task(self.expire_edit_image_state(event, state_key, timestamp))
+            event.stop_event()
             return
 
         prompt, prefix = self.extract_edit_image_prompt(event.message_str)
-        if prefix is None or user_id not in USER_STATES:
+        print("提示词")
+        print(prompt)
+        if prefix is None:
             return
 
-        if not prompt:
-            yield event.plain_result("请输入图像编辑指令，例如：图生图 把背景改成海边。")
-            event.stop_event()
-            return
-
-        image_file = USER_LAST_IMAGES.get(user_id)
-        if not image_file:
-            self.clear_edit_image_state(user_id)
-            yield event.plain_result("未找到待处理的图片，请重新上传图片后再试。")
-            event.stop_event()
-            return
-
-        print("收到指令" + prompt)
-
-        chain, image_paths = edit_image_with_openai(self.image_cfg, image_file, prompt)
-        print("生成图像")
-        print(image_paths)
-        if image_paths:
-            USER_LAST_IMAGES[user_id] = image_paths[0]
-
-        self.clear_edit_image_state(user_id)
-        # yield event.chain_result(cast(list[BaseMessageComponent], chain))
-        event.stop_event()
+        print("开始执行 process_edit_image_prompt")
+        async for result in self.process_edit_image_prompt(event, prompt or ""):
+            yield result
 
 
 # ***************************************************************************************************
