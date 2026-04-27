@@ -16,9 +16,21 @@
                 "items": {
                     "type": "string"
                 },
-                "hint": "配置多个前缀后，发送以前缀开头的消息即可触发画图，例如 img1、画",
+                "hint": "配置多个前缀后，发送以前缀开头的消息即可触发画图，例如 画图,文生图",
                 "default": [
-                    "img1"
+                    "画图"
+                ],
+                "obvious_hint": false
+            },
+            "edit_prefixes": {
+                "description": "编辑图触发命令前缀列表",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "配置多个前缀后，发送以前缀开头的消息即可触发画图，例如 编辑 图生图",
+                "default": [
+                    "图生图"
                 ],
                 "obvious_hint": false
             },
@@ -68,40 +80,6 @@
                 "type": "string",
                 "hint": "请填写RssHub服务器地址",
                 "default": "",
-                "obvious_hint": false
-            }
-        }
-    },
-    "analyse_config": {
-        "description": "识图/文档解析参数配置",
-        "type": "object",
-        "items": {
-            "base_url": {
-                "description": "识图/文档解析服务器base_url",
-                "type": "string",
-                "hint": "请填写识图/文档解析服务器base_url",
-                "default": "https://api.net11.cn/v1",
-                "obvious_hint": false
-            },
-            "api_key": {
-                "description": "识图/文档解析模型API密钥",
-                "type": "string",
-                "hint": "请填写你的识图/文档解析模型API密钥",
-                "default": "",
-                "obvious_hint": false
-            },
-            "model": {
-                "description": "模型识图/文档解析模型名称",
-                "type": "string",
-                "hint": "识图/文档解析模型名称",
-                "default": "glm-4",
-                "obvious_hint": false
-            },
-            "prompt": {
-                "description": "请填写发送图片进行解析的提示词",
-                "type": "string",
-                "hint": "请填写发送图片进行解析的提示词",
-                "default": "请描述这个文件表达的内容",
                 "obvious_hint": false
             }
         }

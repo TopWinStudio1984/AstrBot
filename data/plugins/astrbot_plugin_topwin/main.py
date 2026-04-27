@@ -9,22 +9,26 @@ from astrbot.api.all import *
 
 from .lib import MySQL, Tools, OneNav, Stock
 from .lib.object import Record as DbRecord
-from .lib.util import current_time, common_image, openai_query, dify_query, format_formula, decode_image_result, move_image, remove_think
-from .lib.gemini import generate_image, edit_image
+from .lib.util import (
+    current_time,
+    common_image,
+    openai_query,
+    dify_query,
+    format_formula,
+    decode_image_result,
+    move_image,
+    remove_think,
+    edit_image_with_openai,
+)
 
-import aiohttp
 import asyncio
-import time
 from typing import Any, Dict, Optional, Union, cast
 import json
 
-# 用于跟踪每个用户的状态，防止超时或重复请求
+# Used to track each user's image edit session.
 USER_STATES: Dict[str, Optional[float]] = {}
-USER_PROMPTS: Dict[str, Optional[str]] = {}
-USER_IMAGES: Dict[str, Optional[str]] = {}
 USER_IMAGE_FILES: Dict[str, Optional[str]] = {}
-USER_IMAGE_INFOS: Dict[str, Optional[str]] = {}
-USER_LAST_IMAGES: Dict[str, Optional[str]] = {}  # 保存最后编辑的图片的路径
+USER_LAST_IMAGES: Dict[str, Optional[str]] = {}
 
 @register("topwin_tools", "P.Dragon", "P.Dragon个人的自定义工具插件", "0.1")
 class TopwinToolsPlugin(Star):
@@ -35,9 +39,9 @@ class TopwinToolsPlugin(Star):
         self.config = config
         self.image_cfg: dict[str, Any] = config.get("image_config") or {}
         self.mmapi_cfg: dict[str, Any] = config.get("mmapi_config") or {}
-        self.analyse_cfg: dict[str, Any] = config.get("analyse_config") or {}
         self.share_cfg: dict[str, Any] = config.get("share_config") or {}
-        self.editimage_dir = "/opt/App/filebrowser/filebrowser/files/图像编辑"
+        # self.editimage_dir = "/opt/App/filebrowser/filebrowser/files/图像编辑"
+        self.editimage_dir = r"D:\TDDownload\images"
 
         # Mysql的相关操作
         self.mysql_handler = MySQL(self.mmapi_cfg)
@@ -52,9 +56,9 @@ class TopwinToolsPlugin(Star):
         print("topwin_tools初始化")
 
     def get_image_command_prefixes(self) -> list[str]:
-        prefixes = self.image_cfg.get("command_prefixes", ["img1"])
+        prefixes = self.image_cfg.get("command_prefixes", ["img"])
         if not isinstance(prefixes, list):
-            return ["img1"]
+            return ["img"]
 
         normalized_prefixes: list[str] = []
         for item in prefixes:
@@ -62,7 +66,7 @@ class TopwinToolsPlugin(Star):
             if prefix:
                 normalized_prefixes.append(prefix)
 
-        return normalized_prefixes or ["img1"]
+        return normalized_prefixes or ["img"]
 
     def extract_image_prompt(self, message: str) -> tuple[Optional[str], Optional[str]]:
         content = message.strip()
@@ -81,6 +85,50 @@ class TopwinToolsPlugin(Star):
                     return candidate[len(prefix):].strip(), prefix
 
         return None, None
+
+    def get_edit_image_command_prefixes(self) -> list[str]:
+        prefixes = self.image_cfg.get("edit_prefixes", ["图生图"])
+        if not isinstance(prefixes, list):
+            return ["图生图"]
+
+        normalized_prefixes: list[str] = []
+        for item in prefixes:
+            prefix = str(item).strip()
+            if prefix:
+                normalized_prefixes.append(prefix)
+
+        return normalized_prefixes or ["图生图"]
+
+    def extract_edit_image_prompt(self, message: str) -> tuple[Optional[str], Optional[str]]:
+        content = message.strip()
+        if not content:
+            return None, None
+
+        candidates = [content]
+        if content.startswith("/"):
+            candidates.append(content[1:].strip())
+
+        for candidate in candidates:
+            for prefix in self.get_edit_image_command_prefixes():
+                if candidate == prefix:
+                    return "", prefix
+                if candidate.startswith(f"{prefix} "):
+                    return candidate[len(prefix):].strip(), prefix
+
+        return None, None
+
+    def clear_edit_image_state(self, user_id: str):
+        USER_STATES.pop(user_id, None)
+        USER_IMAGE_FILES.pop(user_id, None)
+        USER_LAST_IMAGES.pop(user_id, None)
+
+    async def expire_edit_image_state(self, event: AstrMessageEvent, user_id: str, timestamp: float):
+        await asyncio.sleep(30)
+        if USER_STATES.get(user_id) != timestamp:
+            return
+
+        self.clear_edit_image_state(user_id)
+        await event.send(event.plain_result("图生图已取消，请重新上传图片后再试。"))
 
     async def render_common_image(self, event: AstrMessageEvent, prompt: str):
         image_cfg = dict(self.image_cfg)
@@ -106,7 +154,8 @@ class TopwinToolsPlugin(Star):
     # 收到LLM请求时
     @filter.on_llm_request()
     async def my_custom_hook_1(self, event: AstrMessageEvent, req: ProviderRequest): # 请注意有三个参数
-        print("收到LLM请求时", req.system_prompt) # 打印请求的文本
+        # print("收到LLM请求时", req.system_prompt) # 打印请求的文本
+        print("收到LLM请求时")
         pass
         # req.system_prompt += "自定义 system_prompt"
     
@@ -212,7 +261,7 @@ class TopwinToolsPlugin(Star):
 # ***************************************************************************************************
 # 通用画图的处理部分
 # ***************************************************************************************************
-    @filter.command("img1")
+    @filter.command("img")
     async def common_image_command(self, event: AstrMessageEvent, prompt: str = ""):
         async for result in self.render_common_image(event, prompt):
             yield result
@@ -223,7 +272,7 @@ class TopwinToolsPlugin(Star):
         if prefix is None:
             return
 
-        if event.message_str.strip().startswith("/") and prefix == "img1":
+        if event.message_str.strip().startswith("/") and prefix == "img":
             return
 
         async for result in self.render_common_image(event, prompt or ""):
@@ -232,399 +281,65 @@ class TopwinToolsPlugin(Star):
 
 
 # ***************************************************************************************************
-# 临时模型切换
+# 图生图的处理部分
 # ***************************************************************************************************
-    @filter.command("m")
-    async def model_ls(self, event: AstrMessageEvent, idx_or_name: Optional[Union[int, str]] = None, prompt: str = ""):
-        '''临时切换模型 命令格式: /m 模型编号 内容'''
-        provider = self.context.get_using_provider(event.unified_msg_origin)
-        if not provider or not isinstance(provider, Provider):
-            yield event.plain_result("未找到任何 LLM 提供商。请先配置。")
-            return
-        
-        models = []
-        try:
-            models = await provider.get_models()
-        except BaseException as e:
-            yield event.plain_result("获取模型列表失败: " + str(e)).use_t2i(False)
-            return
-        i = 1
-        cmd_msg = "下面列出了此服务提供商可用模型:"
-        for model in models:
-            cmd_msg += f"\n{i}. {model}"
-            i += 1
-            
-        cmd_msg += f"\n\n 当前模型：[ {provider.get_model()} ]"
-        cmd_msg += "\nTips: 使用临时切换模型命令 /tmp 模型编号 问题，即可临时更换模型。"
-        
-        if idx_or_name is None or  (not isinstance(idx_or_name, int)):
-            yield event.plain_result(cmd_msg)
-            return
-        else:
-            if idx_or_name > len(models) or idx_or_name < 1:
-                yield event.plain_result("模型序号错误。")
-            else:
-                try:
-                    new_model = models[idx_or_name-1]
-                except BaseException as e:
-                    yield event.plain_result("切换模型未知错误: "+str(e))
-                    return
-                
-                cfg  = provider.provider_config or {}
-                base_url = cfg.get("api_base", None)
-                key_config = cfg.get("key") or []
-                api_key = key_config[0] if isinstance(key_config, list) and len(key_config) > 0 else ""
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def handle_image_edit_request(self, event: AstrMessageEvent):
+        user_id = event.get_sender_id()
 
-                if not api_key:
-                    yield event.plain_result("当前 provider 未配置 API Key。")
-                    return
-
-                if new_model == "wenxiaobai" and (prompt.startswith("画") or prompt.startswith("帮我画") or prompt.startswith("请帮我画")):
-                    new_model = "wenxiaobai-image"
-                    
-                content = event.message_str
-                index = content.find(" ", 3)
-                prompt = content[index+1:]
-
-                print(base_url, api_key, new_model, prompt)
-        
-                result = openai_query(base_url, api_key, new_model, prompt)
-                result = remove_think(result)
-                result = format_formula(result)
-
-                if new_model == "wenxiaobai-image":
-                    chain = decode_image_result(result)
-                    yield event.chain_result(chain)
-                    return
-                
-                id = await self.save_record(event, model, prompt, result)
-                if isinstance(id, int):
-                    result += f"[ {id} ] 链接地址:[ http://s.net11.cn/tmp/{id} ]"
-                
-                yield event.plain_result(f"{result}")
-
-
-# ***************************************************************************************************
-# 分享链接的处理部分
-# ***************************************************************************************************
-# 处理所有消息类型的事件
-    @event_message_type(EventMessageType.ALL)
-    async def handle_share_article(self, event: AstrMessageEvent):
-        return
-        raw_message = event.message_obj.raw_message
-        xml_content = raw_message['Content']['string']
-        pattern = re.compile(r'<url>(.*?)</url>', re.DOTALL)
-        match = pattern.search(xml_content)
-        if match:
-            url = html.unescape(html.unescape(match.group(1)))
-            print(f"handle_share_article: [ {url} ]")
-
-            base_url = self.share_cfg.get("base_url", "")
-            api_key = self.share_cfg.get("api_key", "")
-            model = self.share_cfg.get("model", "")
-            prompt = self.share_cfg.get("prompt", "")
-             
-            if not api_key or len(api_key) == 0:
-                yield event.plain_result("文章分享的解析的api_key未设置。")
-                return
-
-            if not prompt or len(prompt) == 0:
-                prompt = f"帮我总结一下这个链接: {url}"
-            else:
-                prompt = prompt.replace("{url}", url)
-            
-            print(f"提示词: {prompt}")
-            result = openai_query(base_url, api_key, model, prompt)
-            result = format_formula(result)
-            
-            # id = await self.save_record(event, model, prompt, result)
-            # if isinstance(id, int):
-            #     result += f"[ {id} ] 链接地址:[ http://s.net11.cn/tmp/{id} ]"
-            
-            yield event.plain_result(f"{result}")
-
-
-# ***************************************************************************************************
-# 文档和图像识别的处理部分
-# ***************************************************************************************************
-    @command("解析")
-    async def analyse_image(self, event: AstrMessageEvent, prompt : str = ""):
-        '''这是一个图片和文件解析的工具,命令格式: /解析 要描述的内容'''
-        user_id = event.get_sender_id()  # 获取用户ID
-        
-        USER_STATES[user_id] = time.time()  # 记录用户请求的时间
-        USER_PROMPTS[user_id] = prompt
-        yield event.plain_result("开始等待解析图片和文件,请在30秒内发送你要解析的图片/文件或者url地址")  # 提示用户发送图片
-        await asyncio.sleep(30)  # 等待30秒
-        # 如果超时，删除用户状态并通知用户
-        if user_id in USER_STATES:
-            del USER_STATES[user_id]
-            del USER_PROMPTS[user_id]
-            yield event.plain_result("识图等待超时,请重新执行命令. /识图 内容")
-    
-    
-    # 处理所有消息类型的事件
-    @event_message_type(EventMessageType.ALL)
-    async def handle_image_file(self, event: AstrMessageEvent):
-        print("handle_image_file")
-        # return
-        user_id = event.get_sender_id()  # 获取发送者的ID
-        
-        # if user_id not in USER_STATES:  # 如果用户没有发起请求，跳过
-        #     return
-        
-        print(self.image_cfg)
-        
-        # 检查消息中是否包含地址
-        image_url = ""
         image_file = ""
-        prompt = ""
-        for c in event.message_obj.message:
-            if isinstance(c, Image):
-                image_url = c.url
-                image_file = c.file
-                break
-            if isinstance(c, Plain):
-                prompt = c.text
+        for component in event.message_obj.message:
+            if isinstance(component, Image):
+                image_file = component.file or ""
                 break
         
-        base_url = self.analyse_cfg.get("base_url", "")
-        api_key = self.analyse_cfg.get("api_key", "")
-        model = self.analyse_cfg.get("model", "")
-
-        print(base_url, api_key, model)
-
-        if len(image_url) == 0:
-            if user_id not in USER_STATES:
-                print(f"提示词超时: {prompt}")
-                return
-            else:
-                image_url = USER_IMAGES[user_id]
-        else:
-            # 如果上传了图片,等待10秒用户输入问题,如果没有输入,则用默认问题
-            USER_STATES[user_id] = time.time()  # 记录用户请求的时间
-            USER_IMAGES[user_id] = image_url    # 记录用户请求的额图片
+        print("image_file1")
+        if image_file:
             image_file = move_image(image_file, self.editimage_dir)
-            print(image_file)
-            USER_IMAGE_FILES[user_id] = image_file  # 记录用户请求的本地文件路径
+            print(image_file[:100])
+            timestamp = asyncio.get_running_loop().time()
+            USER_STATES[user_id] = timestamp
+            USER_IMAGE_FILES[user_id] = image_file
             USER_LAST_IMAGES[user_id] = image_file
 
-            # 2025.04.13 增加问小白的图片解析功能
-            if 'wenxiaobai' in model:
-                print("图片上传问小白服务器")
-                url = "http://bjnas.top:8101/wenxb/upload_image"
-                params = {
-                    "token": "Qweasd@12345"
-                }
-
-                with open(image_file, 'rb') as f:
-                    # 创建文件对象
-                    files = {'file': (image_file.split('/')[-1], f, 'application/octet-stream')}
-                    
-                    # 发送POST请求
-                    response = requests.post(url,params=params, files=files)
-                    result = response.json()
-                    print("上传问小白图片成功",result)
-                    USER_IMAGE_INFOS[user_id] = result['data']
-
-            tmp_prompt = self.analyse_cfg.get("prompt", "")
-            yield event.plain_result(f"您上传了一张图片，触发了大模型的图像解析和编辑操作,会话时间10分钟,命令格式如下：\n格式: 1 [提示词]  -> 采用提示词进行文字解析，默认提示词为:[ {tmp_prompt} ]\n格式: 2 图像处理内容 -> 对图像进行编辑操作\n格式: 3 -> 结束图像解析/编辑工作")
-            await asyncio.sleep(600) 
-
-            if user_id in USER_STATES:
-                del USER_STATES[user_id]
-            if user_id in USER_IMAGES:
-                del USER_IMAGES[user_id]
-            if user_id in USER_IMAGE_FILES:
-                del USER_IMAGE_FILES[user_id]
-            if user_id in USER_LAST_IMAGES:
-                del USER_LAST_IMAGES[user_id]
-            if user_id in USER_IMAGE_INFOS:
-                del USER_IMAGE_INFOS[user_id]
-            # yield event.plain_result(f"本轮图像解析/编辑时间到,请重新开启新一轮处理")
-            print(f"本轮图像解析/编辑时间到,请重新开启新一轮处理")
-            return
-        
-        # # 删除用户状态，表示用户已提交图片
-        # if user_id in USER_STATES:
-        #     del USER_STATES[user_id]
-        #     del USER_IMAGES[user_id]
-        #     del USER_IMAGE_FILES[user_id]
-        # else:
-        #     print(f"已采用自定义提示词")
-        #     return
-        image_info = {}
-        if user_id in USER_IMAGE_INFOS:
-            image_info = USER_IMAGE_INFOS[user_id]
-
-        if prompt.strip() == "3":
-            yield event.plain_result("本轮图像解析/图像编辑工作结束")
-
-            if user_id in USER_STATES:
-                del USER_STATES[user_id]
-            if user_id in USER_IMAGES:
-                del USER_IMAGES[user_id]
-            if user_id in USER_IMAGE_FILES:
-                del USER_IMAGE_FILES[user_id]
-            if user_id in USER_LAST_IMAGES:
-                del USER_LAST_IMAGES[user_id]
-            if user_id in USER_IMAGE_INFOS:
-                del USER_IMAGE_INFOS[user_id]
-            return
-        
-        if user_id not in USER_STATES:
-            return
-        
-         # 拦截图像编辑
-        if prompt.startswith("2 "):
-            prompt = prompt[2:].strip()  # 获取实际内容
-            
-            # 获取本地图片文件路径
-            image_file = USER_LAST_IMAGES[user_id]
-            if not image_file or len(image_file) == 0:
-                yield event.plain_result("未找到需要处理的图片文件")
-                return
-            
-            base_url = self.image_cfg.get("base_url", "")
-            api_key = self.image_cfg.get("api_key", "")
-            proxy_url = self.image_cfg.get("proxy_url", "")
-            print(image_file)
-            chain, image_paths = edit_image(base_url, api_key, image_file, prompt, proxy_url)
-            if len(image_paths) > 0:
-                USER_LAST_IMAGES[user_id] = image_paths[0]
-            
-            if len(chain) == 0:
-                yield event.plain_result("编辑图像失败,请重新输入提示词")
-                return
-
-            yield event.chain_result(chain)
-            return
-            
-        if not prompt or len(prompt) == 0 or prompt.strip() == "1":
-            prompt = self.analyse_cfg.get("prompt", "")
-
-        if prompt.startswith("1 "):
-            prompt = prompt[2:].strip()  # 获取实际内容
-  
-        # yield event.plain_result(f"正在解析图片内容请稍后,提示词为: [ {prompt} ]")
-                            
-        # 如果未配置API Key，提醒用户
-        if not api_key:
-            yield event.plain_result("请先配置识图/文档解析API Key")
+            prefixes_text = " / ".join(self.get_edit_image_command_prefixes())
+            yield event.plain_result(
+                f"已收到图片，请在30秒内发送“前缀 处理命令”进行图生图，例如：{prefixes_text} 把背景改成海边。"
+            )
+            asyncio.create_task(self.expire_edit_image_state(event, user_id, timestamp))
             return
 
-        # data/temp/1739346982_a0959f73.jpg
-        # image_name = image_url.split("/")[-1]
-        print(image_url)
-        print(base_url, api_key, model)
-        # image_url = "http://wefile.net11.cn/1739316882_71799dea.jpg"
-        try:
-            # 使用aiohttp进行异步请求
-            async with aiohttp.ClientSession() as session:
-                headers = {
-                    'Content-Type': 'application/json',
-                    'Authorization': f'Bearer {api_key}'
-                }
+        prompt, prefix = self.extract_edit_image_prompt(event.message_str)
+        if prefix is None or user_id not in USER_STATES:
+            return
 
-                data = {
-                    "model": model,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                "type": "file",
-                                    "file_url": {
-                                        "url": image_url
-                                    } 
-                                },
-                                {
-                                    "type": "text",
-                                    "text": prompt
-                                }
-                            ]
-                        }
-                    ]
-                }
+        if not prompt:
+            yield event.plain_result("请输入图像编辑指令，例如：图生图 把背景改成海边。")
+            event.stop_event()
+            return
 
-                if image_info:
-                    data = {
-                        "model": model,
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": prompt
-                            }
-                        ],
-                        "image_info": image_info
-                    }
-                print(data)
+        image_file = USER_LAST_IMAGES.get(user_id)
+        if not image_file:
+            self.clear_edit_image_state(user_id)
+            yield event.plain_result("未找到待处理的图片，请重新上传图片后再试。")
+            event.stop_event()
+            return
 
-                # 调用SauceNAO API进行图片搜索
-                url = f'{base_url}/chat/completions'
-                # print(url)
-                # print(data)
-                # print(headers)
-                async with session.post(url, json=data, headers=headers) as resp:
-                    data = await resp.json()  # 解析返回的JSON数据
-                print(data)
-                ret_result = data['choices'][0]['message']['content']
-                yield event.plain_result(ret_result)
-                
-        except Exception as e:  # 捕获异常并返回错误信息
-            print(f"识图/解析文档失败: {str(e)}")
-            yield event.plain_result(f"识图/解析文档失败: {str(e)}")
-            
-            
-                    
+        print("收到指令" + prompt)
+
+        chain, image_paths = edit_image_with_openai(self.image_cfg, image_file, prompt)
+        print("生成图像")
+        print(image_paths)
+        if image_paths:
+            USER_LAST_IMAGES[user_id] = image_paths[0]
+
+        self.clear_edit_image_state(user_id)
+        # yield event.chain_result(cast(list[BaseMessageComponent], chain))
+        event.stop_event()
+
+
 # ***************************************************************************************************
-# Stock的处理部分
-# ***************************************************************************************************
-    @command_group("st")
-    def stock(self):
-        '''
-        这是一个 Stock 指令组，取缩写st
-        [查看新闻] /st news 内容
-        [查找信息] /st search 名称/代码
-        [统计信息] /st stat [1-9]
-        [推荐信息] /st t [1-9]
-                   '最新投资评级', '上调评级股票', '下调评级股票', '股票综合评级', '首次评级股票', '目标涨幅排名', '机构关注度', '行业关注度', '投资评级选股'
-        [筹码分布] /st cm 名称/代码
-        '''
-        pass
-
-    @stock.command("news")
-    async def st_news(self, event: AstrMessageEvent, prompt : str = ""):
-        result = self.stock_handler.dispatch("news", prompt)
-        yield event.plain_result(f"{result}")
-
-    @stock.command("search")
-    async def st_search(self, event: AstrMessageEvent, prompt : str = ""):
-        result = self.stock_handler.dispatch("search", prompt)
-        yield event.plain_result(f"{result}")
-
-    @stock.command("stat")
-    async def st_stat(self, event: AstrMessageEvent, prompt : str = ""):
-        result = self.stock_handler.dispatch("stat", prompt)
-        yield event.plain_result(f"{result}")
-
-    @stock.command("t")
-    async def st_recommended(self, event: AstrMessageEvent, prompt : str = ""):
-        result = self.stock_handler.dispatch("t", prompt)
-        yield event.plain_result(f"{result}")
-
-    @stock.command("cm")
-    async def st_cm(self, event: AstrMessageEvent, prompt : str = ""):
-        result = self.stock_handler.dispatch("cm", prompt)
-        if isinstance(result, list):
-            yield event.chain_result(result)
-        else:
-            yield event.plain_result(f"{result}")
-        
-        
-        
-# ***************************************************************************************************
-# MySQL操作部分的处理部分
+# 临时模型切换
 # ***************************************************************************************************
     @command_group("my")
     def mysql(self):

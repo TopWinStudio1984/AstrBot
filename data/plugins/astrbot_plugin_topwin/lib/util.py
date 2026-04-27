@@ -1,20 +1,17 @@
-import requests, re
-from astrbot.api.message_components import *
-
 import base64
-import re
-import sys
 import os
-import subprocess
-import requests
-import shutil
-import re
 import random
-from pathlib import Path
-from datetime import datetime
+import re
+import shutil
+import subprocess
+import sys
 import time
+from datetime import datetime
+from pathlib import Path
+
 import emoji
-# from lib import itchat
+import requests
+from astrbot.api.message_components import *
 from bs4 import BeautifulSoup
 
 
@@ -186,6 +183,14 @@ def common_image(cfg, name, prompt, is_dify):
     return decode_image_result(result)
 
 
+def save_base64_image(image_data, prefix="openai_image"):
+    image_dir = Path("data/temp")
+    image_dir.mkdir(parents=True, exist_ok=True)
+    image_path = image_dir / f"{prefix}_{int(time.time() * 1000)}_{random.randint(1000, 9999)}.png"
+    image_path.write_bytes(base64.b64decode(image_data))
+    return image_path
+
+
 # 解析 /v1/images/generations 返回结果
 def decode_generation_result(result):
     if isinstance(result, str):
@@ -196,8 +201,6 @@ def decode_generation_result(result):
         return [Plain("没有内容生成!")]
 
     chain = []
-    image_dir = Path("data/temp")
-    image_dir.mkdir(parents=True, exist_ok=True)
 
     for item in data_list:
         image_url = item.get('url')
@@ -208,15 +211,95 @@ def decode_generation_result(result):
             continue
 
         if b64_json:
-            image_bytes = base64.b64decode(b64_json)
-            image_path = image_dir / f"openai_image_{int(time.time() * 1000)}_{random.randint(1000, 9999)}.png"
-            image_path.write_bytes(image_bytes)
+            image_path = save_base64_image(b64_json)
             chain.append(Image.fromFileSystem(str(image_path)))
 
     if len(chain) == 0:
         chain.append(Plain("没有内容生成!"))
 
     return chain
+
+
+def openai_edit_image_query(base_url, api_key, model, image_path, prompt, size=None, response_format="b64_json"):
+    base_url = normalize_openai_base_url(base_url)
+    url = f'{base_url}/v1/images/edits'
+    print(url)
+
+    data = {
+        "prompt": prompt,
+        "response_format": response_format,
+    }
+    if model:
+        data["model"] = model
+    if size:
+        data["size"] = size
+
+    with Path(image_path).open("rb") as image_file:
+        files = {
+            "image": (Path(image_path).name, image_file, "application/octet-stream")
+        }
+        response = requests.post(
+            url,
+            data=data,
+            files=files,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+
+    if response.status_code != 200:
+        return f'Error: {response.status_code}, Message: {response.text}'
+
+    return response.json()
+
+
+def edit_image_with_openai(cfg, image_path, prompt):
+    if not prompt:
+        return [Plain("请提供图像编辑提示词!")], []
+
+    base_url = cfg.get("base_url", "")
+    api_key = cfg.get("api_key", "")
+    model = cfg.get("model", "")
+    size = cfg.get("size", "")
+    response_format = cfg.get("response_format", "b64_json")
+
+    if len(api_key) == 0:
+        return [Plain("未设置图生图的api_key，请设置后重试!")], []
+
+    result = openai_edit_image_query(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        image_path=image_path,
+        prompt=prompt,
+        size=size,
+        response_format=response_format,
+    )
+
+    if isinstance(result, str):
+        return [Plain(result)], []
+
+    data_list = result.get("data", [])
+    if len(data_list) == 0:
+        return [Plain("没有内容生成!")], []
+
+    chain = []
+    image_paths = []
+    for item in data_list:
+        image_url = item.get("url")
+        b64_json = item.get("b64_json")
+
+        if image_url:
+            chain.append(Image.fromURL(image_url))
+            continue
+
+        if b64_json:
+            saved_path = save_base64_image(b64_json, prefix="openai_edit")
+            image_paths.append(str(saved_path))
+            chain.append(Image.fromFileSystem(str(saved_path)))
+
+    if len(chain) == 0:
+        chain.append(Plain("没有内容生成!"))
+
+    return chain, image_paths
 
 
 # 去除思考过程
@@ -576,20 +659,57 @@ def format_formula1(input_string):
 
 # 将原目录的文件复制到新目录，并返回新路径,主要配合FileBrowser
 def move_image(image_src, target_dir):
-    # 如果目标目录不存在则创建
-    if not os.path.exists(target_dir):
-        os.makedirs(target_dir)
-        
-    # 获取原文件名
-    filename = os.path.basename(image_src)
-    
-    # 构建目标文件路径
-    target_path = os.path.join(target_dir, filename)
-    
-    # 移动文件,如果失败则返回原路径
+    target_path = Path(target_dir)
+    target_path.mkdir(parents=True, exist_ok=True)
+
+    image_src = str(image_src).strip()
+    if not image_src:
+        return ""
+
+    def save_binary_image(image_bytes, suffix=".png"):
+        image_path = target_path / f"image_{int(time.time() * 1000)}_{random.randint(1000, 9999)}{suffix}"
+        image_path.write_bytes(image_bytes)
+        return str(image_path)
+
+    if image_src.startswith("data:"):
+        try:
+            header, encoded = image_src.split(",", 1)
+            match = re.search(r"image/([a-zA-Z0-9]+)", header)
+            suffix = f".{match.group(1)}" if match else ".png"
+            return save_binary_image(base64.b64decode(encoded), suffix)
+        except Exception:
+            return image_src
+
+    if image_src.startswith("base64://"):
+        try:
+            encoded = image_src[len("base64://") :]
+            return save_binary_image(base64.b64decode(encoded), ".png")
+        except Exception:
+            return image_src
+
     try:
-        shutil.move(image_src, target_path)
-    except:
+        return save_binary_image(base64.b64decode(image_src, validate=True))
+    except Exception:
+        pass
+
+    if is_url(image_src):
+        try:
+            response = requests.get(image_src, timeout=10)
+            response.raise_for_status()
+            suffix = Path(image_src.split("?", 1)[0]).suffix or ".png"
+            return save_binary_image(response.content, suffix)
+        except Exception:
+            return image_src
+
+    src_path = Path(image_src)
+    if not src_path.exists() or not src_path.is_file():
         return image_src
-    
-    return target_path
+
+    destination = target_path / src_path.name
+
+    try:
+        shutil.move(str(src_path), str(destination))
+    except Exception:
+        return str(src_path)
+
+    return str(destination)

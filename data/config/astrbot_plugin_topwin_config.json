@@ -2,8 +2,12 @@
   "image_config": {
     "base_url": "http://chatgpt2api.net11.cn/v1",
     "command_prefixes": [
-      "img1",
-      "画图"
+      "画图",
+      "文生图"
+    ],
+    "edit_prefixes": [
+      "图生图",
+      "编辑"
     ],
     "api_key": "sk-DCooV8zeJ5rGudx9CcK8fKrsZVLqWS8R",
     "model": "gpt-image-2",
@@ -13,12 +17,6 @@
     "host": "http://api.my.net11.cn",
     "authorization": "",
     "rss_base": ""
-  },
-  "analyse_config": {
-    "base_url": "https://api.net11.cn/v1",
-    "api_key": "",
-    "model": "glm-4",
-    "prompt": "请描述这个文件表达的内容"
   },
   "share_config": {
     "base_url": "http://api.net11.cn/v1",
