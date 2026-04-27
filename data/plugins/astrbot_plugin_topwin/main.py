@@ -40,8 +40,7 @@ class TopwinToolsPlugin(Star):
         self.image_cfg: dict[str, Any] = config.get("image_config") or {}
         self.mmapi_cfg: dict[str, Any] = config.get("mmapi_config") or {}
         self.share_cfg: dict[str, Any] = config.get("share_config") or {}
-        # self.editimage_dir = "/opt/App/filebrowser/filebrowser/files/图像编辑"
-        self.editimage_dir = r"D:\TDDownload\images"
+        self.editimage_dir = str(self.image_cfg.get("editimage_dir", "")).strip()
 
         # Mysql的相关操作
         self.mysql_handler = MySQL(self.mmapi_cfg)
@@ -122,6 +121,9 @@ class TopwinToolsPlugin(Star):
         USER_IMAGE_FILES.pop(state_key, None)
         USER_LAST_IMAGES.pop(state_key, None)
 
+    def get_editimage_dir(self) -> str:
+        return str(self.image_cfg.get("editimage_dir", "")).strip()
+
     def get_edit_image_state_key(self, event: AstrMessageEvent) -> str:
         session_id = event.get_session_id().strip()
         if session_id:
@@ -142,6 +144,12 @@ class TopwinToolsPlugin(Star):
     async def process_edit_image_prompt(self, event: AstrMessageEvent, prompt: str):
         state_key = self.get_edit_image_state_key(event)
         if state_key not in USER_STATES:
+            return
+
+        if not self.get_editimage_dir():
+            self.clear_edit_image_state(state_key)
+            yield event.plain_result("未配置 image_config.editimage_dir，请先在插件配置中设置图像保存目录。")
+            event.stop_event()
             return
 
         if not prompt:
@@ -337,7 +345,13 @@ class TopwinToolsPlugin(Star):
                 break
         
         if image_file:
-            image_file = move_image(image_file, self.editimage_dir)
+            editimage_dir = self.get_editimage_dir()
+            if not editimage_dir:
+                yield event.plain_result("未配置 image_config.editimage_dir，请先在插件配置中设置图像保存目录。")
+                event.stop_event()
+                return
+
+            image_file = move_image(image_file, editimage_dir)
             print("收到图像文件:", image_file[:100])
             timestamp = asyncio.get_running_loop().time()
             USER_STATES[state_key] = timestamp

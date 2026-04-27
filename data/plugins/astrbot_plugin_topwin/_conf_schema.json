@@ -54,6 +54,13 @@
                 "hint": "请填写画图模式: chat 或 image",
                 "default": "image",
                 "obvious_hint": false
+            },
+            "editimage_dir": {
+                "description": "图生图图片保存目录",
+                "type": "string",
+                "hint": "请填写图生图收到图片后的保存目录，留空则图生图功能会提示未配置",
+                "default": "",
+                "obvious_hint": false
             }
         }
     },
