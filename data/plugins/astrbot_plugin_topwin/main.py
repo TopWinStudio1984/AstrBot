@@ -33,7 +33,7 @@ class TopwinToolsPlugin(Star):
         self.context: Context = context
         
         self.config = config
-        self.glm_cfg: dict[str, Any] = config.get("glm_config") or {}
+        self.image_cfg: dict[str, Any] = config.get("image_config") or {}
         self.mmapi_cfg: dict[str, Any] = config.get("mmapi_config") or {}
         self.analyse_cfg: dict[str, Any] = config.get("analyse_config") or {}
         self.share_cfg: dict[str, Any] = config.get("share_config") or {}
@@ -50,6 +50,48 @@ class TopwinToolsPlugin(Star):
         self.tools_handler = Tools(self.mmapi_cfg)
         
         print("topwin_tools初始化")
+
+    def get_image_command_prefixes(self) -> list[str]:
+        prefixes = self.image_cfg.get("command_prefixes", ["img1"])
+        if not isinstance(prefixes, list):
+            return ["img1"]
+
+        normalized_prefixes: list[str] = []
+        for item in prefixes:
+            prefix = str(item).strip()
+            if prefix:
+                normalized_prefixes.append(prefix)
+
+        return normalized_prefixes or ["img1"]
+
+    def extract_image_prompt(self, message: str) -> tuple[Optional[str], Optional[str]]:
+        content = message.strip()
+        if not content:
+            return None, None
+
+        candidates = [content]
+        if content.startswith("/"):
+            candidates.append(content[1:].strip())
+
+        for candidate in candidates:
+            for prefix in self.get_image_command_prefixes():
+                if candidate == prefix:
+                    return "", prefix
+                if candidate.startswith(f"{prefix} "):
+                    return candidate[len(prefix):].strip(), prefix
+
+        return None, None
+
+    async def render_common_image(self, event: AstrMessageEvent, prompt: str):
+        image_cfg = dict(self.image_cfg)
+        api_type = str(image_cfg.get("api_type", "image")).strip().lower() or "image"
+        if api_type not in {"chat", "image"}:
+            yield event.plain_result("image_config.api_type 配置错误，请填写 chat 或 image")
+            return
+
+        image_cfg["api_type"] = api_type
+        chain = cast(list[BaseMessageComponent], common_image(image_cfg, "通用画图", prompt, False))
+        yield event.chain_result(chain)
 
 
 # ***************************************************************************************************
@@ -168,19 +210,25 @@ class TopwinToolsPlugin(Star):
 
 
 # ***************************************************************************************************
-# 画图的处理部分
+# 通用画图的处理部分
 # ***************************************************************************************************
     @filter.command("img1")
-    async def glm_image(self, event: AstrMessageEvent, prompt: str = ""):
-        glm_cfg = dict(self.glm_cfg)
-        api_type = str(glm_cfg.get("api_type", "image")).strip().lower() or "image"
-        if api_type not in {"chat", "image"}:
-            yield event.plain_result("glm_config.api_type 配置错误，请填写 chat 或 image")
+    async def common_image_command(self, event: AstrMessageEvent, prompt: str = ""):
+        async for result in self.render_common_image(event, prompt):
+            yield result
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def handle_general_image_command(self, event: AstrMessageEvent):
+        prompt, prefix = self.extract_image_prompt(event.message_str)
+        if prefix is None:
             return
 
-        glm_cfg["api_type"] = api_type
-        chain = cast(list[BaseMessageComponent], common_image(glm_cfg, "GLM画图", prompt, False))
-        yield event.chain_result(chain)
+        if event.message_str.strip().startswith("/") and prefix == "img1":
+            return
+
+        async for result in self.render_common_image(event, prompt or ""):
+            yield result
+        event.stop_event()
 
 
 # ***************************************************************************************************
@@ -222,7 +270,6 @@ class TopwinToolsPlugin(Star):
                     yield event.plain_result("切换模型未知错误: "+str(e))
                     return
                 
-                # 采用provider的信息和选择的模型进行调用
                 cfg  = provider.provider_config or {}
                 base_url = cfg.get("api_base", None)
                 key_config = cfg.get("key") or []
@@ -231,14 +278,7 @@ class TopwinToolsPlugin(Star):
                 if not api_key:
                     yield event.plain_result("当前 provider 未配置 API Key。")
                     return
-                
-                # 问小白单独处理,不经过oneapi的处理
-                # if new_model == "wenxiaobai":
-                #     base_url = "http://bjnas.top:8004/v1"
-                #     api_key = "keep_secret"
-                #     print("问小白")
 
-                # 2025.04.13 问小白的内容中处理
                 if new_model == "wenxiaobai" and (prompt.startswith("画") or prompt.startswith("帮我画") or prompt.startswith("请帮我画")):
                     new_model = "wenxiaobai-image"
                     
@@ -262,7 +302,7 @@ class TopwinToolsPlugin(Star):
                     result += f"[ {id} ] 链接地址:[ http://s.net11.cn/tmp/{id} ]"
                 
                 yield event.plain_result(f"{result}")
-                
+
 
 # ***************************************************************************************************
 # 分享链接的处理部分
@@ -333,7 +373,7 @@ class TopwinToolsPlugin(Star):
         # if user_id not in USER_STATES:  # 如果用户没有发起请求，跳过
         #     return
         
-        print(self.glm_cfg)
+        print(self.image_cfg)
         
         # 检查消息中是否包含地址
         image_url = ""
@@ -445,9 +485,9 @@ class TopwinToolsPlugin(Star):
                 yield event.plain_result("未找到需要处理的图片文件")
                 return
             
-            base_url = self.glm_cfg.get("base_url", "")
-            api_key = self.glm_cfg.get("api_key", "")
-            proxy_url = self.glm_cfg.get("proxy_url", "")
+            base_url = self.image_cfg.get("base_url", "")
+            api_key = self.image_cfg.get("api_key", "")
+            proxy_url = self.image_cfg.get("proxy_url", "")
             print(image_file)
             chain, image_paths = edit_image(base_url, api_key, image_file, prompt, proxy_url)
             if len(image_paths) > 0:

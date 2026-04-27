@@ -1,6 +1,6 @@
 {
-    "glm_config": {
-        "description": "glm画图参数配置",
+    "image_config": {
+        "description": "通用画图参数配置",
         "type": "object",
         "items": {
             "base_url": {
@@ -8,6 +8,18 @@
                 "type": "string",
                 "hint": "请填写画图服务器base_url",
                 "default": "https://api.net11.cn/v1",
+                "obvious_hint": false
+            },
+            "command_prefixes": {
+                "description": "画图触发命令前缀列表",
+                "type": "list",
+                "items": {
+                    "type": "string"
+                },
+                "hint": "配置多个前缀后，发送以前缀开头的消息即可触发画图，例如 img1、画",
+                "default": [
+                    "img1"
+                ],
                 "obvious_hint": false
             },
             "api_key": {
@@ -20,7 +32,7 @@
             "model": {
                 "description": "画图AI的模型名称",
                 "type": "string",
-                "hint": "画图AI的图像生成模型",
+                "hint": "通用画图模型名称",
                 "default": "cogview-3",
                 "obvious_hint": false
             },

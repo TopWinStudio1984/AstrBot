@@ -1,6 +1,10 @@
 ﻿{
-  "glm_config": {
+  "image_config": {
     "base_url": "http://chatgpt2api.net11.cn/v1",
+    "command_prefixes": [
+      "img1",
+      "画图"
+    ],
     "api_key": "sk-DCooV8zeJ5rGudx9CcK8fKrsZVLqWS8R",
     "model": "gpt-image-2",
     "api_type": "image"
