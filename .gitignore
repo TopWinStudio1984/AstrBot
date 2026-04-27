@@ -19,7 +19,8 @@ cookies.json
 # Data files
 data_v2.db
 data_v3.db
-data
+# data
+data_v4.db*
 configs/session
 configs/config.yaml
 cmd_config.json

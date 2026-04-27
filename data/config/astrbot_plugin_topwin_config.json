@@ -1,0 +1,25 @@
+﻿{
+  "glm_config": {
+    "base_url": "http://chatgpt2api.net11.cn/v1",
+    "api_key": "sk-DCooV8zeJ5rGudx9CcK8fKrsZVLqWS8R",
+    "model": "gpt-image-2",
+    "api_type": "image"
+  },
+  "mmapi_config": {
+    "host": "http://api.my.net11.cn",
+    "authorization": "",
+    "rss_base": ""
+  },
+  "analyse_config": {
+    "base_url": "https://api.net11.cn/v1",
+    "api_key": "",
+    "model": "glm-4",
+    "prompt": "请描述这个文件表达的内容"
+  },
+  "share_config": {
+    "base_url": "http://api.net11.cn/v1",
+    "api_key": "",
+    "model": "glm-4",
+    "prompt": "帮我总结一下这个链接: {url}"
+  }
+}

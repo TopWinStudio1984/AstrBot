@@ -1,0 +1,131 @@
+{
+    "glm_config": {
+        "description": "glm画图参数配置",
+        "type": "object",
+        "items": {
+            "base_url": {
+                "description": "画图服务器base_url",
+                "type": "string",
+                "hint": "请填写画图服务器base_url",
+                "default": "https://api.net11.cn/v1",
+                "obvious_hint": false
+            },
+            "api_key": {
+                "description": "画图AI的API密钥",
+                "type": "string",
+                "hint": "请填写你的画图AI API密钥",
+                "default": "",
+                "obvious_hint": false
+            },
+            "model": {
+                "description": "画图AI的模型名称",
+                "type": "string",
+                "hint": "画图AI的图像生成模型",
+                "default": "cogview-3",
+                "obvious_hint": false
+            },
+            "api_type": {
+                "description": "画图模式",
+                "type": "string",
+                "hint": "请填写画图模式: chat 或 image",
+                "default": "image",
+                "obvious_hint": false
+            }
+        }
+    },
+    "mmapi_config": {
+        "description": "MyManager API参数配置",
+        "type": "object",
+        "items": {
+            "host": {
+                "description": "MyManager主机地址",
+                "type": "string",
+                "hint": "请填写MyManager主机地址",
+                "default": "http://api.my.net11.cn",
+                "obvious_hint": false
+            },
+            "authorization": {
+                "description": "MyManager主机验证码",
+                "type": "string",
+                "hint": "请填写MyManager主机验证码",
+                "default": "",
+                "obvious_hint": false
+            },
+            "rss_base": {
+                "description": "RssHub服务器地址",
+                "type": "string",
+                "hint": "请填写RssHub服务器地址",
+                "default": "",
+                "obvious_hint": false
+            }
+        }
+    },
+    "analyse_config": {
+        "description": "识图/文档解析参数配置",
+        "type": "object",
+        "items": {
+            "base_url": {
+                "description": "识图/文档解析服务器base_url",
+                "type": "string",
+                "hint": "请填写识图/文档解析服务器base_url",
+                "default": "https://api.net11.cn/v1",
+                "obvious_hint": false
+            },
+            "api_key": {
+                "description": "识图/文档解析模型API密钥",
+                "type": "string",
+                "hint": "请填写你的识图/文档解析模型API密钥",
+                "default": "",
+                "obvious_hint": false
+            },
+            "model": {
+                "description": "模型识图/文档解析模型名称",
+                "type": "string",
+                "hint": "识图/文档解析模型名称",
+                "default": "glm-4",
+                "obvious_hint": false
+            },
+            "prompt": {
+                "description": "请填写发送图片进行解析的提示词",
+                "type": "string",
+                "hint": "请填写发送图片进行解析的提示词",
+                "default": "请描述这个文件表达的内容",
+                "obvious_hint": false
+            }
+        }
+    },
+    "share_config": {
+        "description": "分享文章解析参数配置",
+        "type": "object",
+        "items": {
+            "base_url": {
+                "description": "分享文章解析服务器base_url",
+                "type": "string",
+                "hint": "请填写分享文章解析服务器base_url",
+                "default": "http://api.net11.cn/v1",
+                "obvious_hint": false
+            },
+            "api_key": {
+                "description": "分享文章解析模型API密钥",
+                "type": "string",
+                "hint": "请填写你的分享文章解析模型API密钥",
+                "default": "",
+                "obvious_hint": false
+            },
+            "model": {
+                "description": "分享文章解析模型名称",
+                "type": "string",
+                "hint": "分享文章解析型名称",
+                "default": "glm-4",
+                "obvious_hint": false
+            },
+            "prompt": {
+                "description": "请填写分享文章解析的提示词,地址用{url}占位符",
+                "type": "string",
+                "hint": "请填写分享文章解析的提示词,地址用{url}占位符",
+                "default": "帮我总结一下这个链接: {url}",
+                "obvious_hint": false
+            }
+        }
+    }
+}
