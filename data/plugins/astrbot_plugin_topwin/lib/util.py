@@ -191,6 +191,37 @@ def save_base64_image(image_data, prefix="openai_image"):
     return image_path
 
 
+def build_image_component(image_ref, prefix="openai_image"):
+    image_ref = str(image_ref or "").strip()
+    if not image_ref:
+        return None, None
+
+    if image_ref.startswith("http://") or image_ref.startswith("https://"):
+        return Image.fromURL(image_ref), None
+
+    if image_ref.startswith("data:"):
+        try:
+            header, encoded = image_ref.split(",", 1)
+            image_path = save_base64_image(encoded, prefix=prefix)
+            return Image.fromFileSystem(str(image_path)), str(image_path)
+        except Exception:
+            return Plain(image_ref), None
+
+    if image_ref.startswith("base64://"):
+        try:
+            encoded = image_ref[len("base64://") :]
+            image_path = save_base64_image(encoded, prefix=prefix)
+            return Image.fromFileSystem(str(image_path)), str(image_path)
+        except Exception:
+            return Plain(image_ref), None
+
+    try:
+        image_path = save_base64_image(image_ref, prefix=prefix)
+        return Image.fromFileSystem(str(image_path)), str(image_path)
+    except Exception:
+        return Plain(image_ref), None
+
+
 # 解析 /v1/images/generations 返回结果
 def decode_generation_result(result):
     if isinstance(result, str):
@@ -207,17 +238,21 @@ def decode_generation_result(result):
         b64_json = item.get('b64_json')
 
         if image_url:
-            chain.append(Image.fromURL(image_url))
+            image_component, _ = build_image_component(image_url, prefix="openai_image")
+            if image_component:
+                chain.append(image_component)
             continue
 
         if b64_json:
-            image_path = save_base64_image(b64_json)
-            chain.append(Image.fromFileSystem(str(image_path)))
+            image_component, _ = build_image_component(f"base64://{b64_json}", prefix="openai_image")
+            if image_component:
+                chain.append(image_component)
 
     if len(chain) == 0:
         chain.append(Plain("没有内容生成!"))
 
     return chain
+
 
 
 def openai_edit_image_query(base_url, api_key, model, image_path, prompt, size=None, response_format="b64_json"):
@@ -288,18 +323,25 @@ def edit_image_with_openai(cfg, image_path, prompt):
         b64_json = item.get("b64_json")
 
         if image_url:
-            chain.append(Image.fromURL(image_url))
+            image_component, saved_path = build_image_component(image_url, prefix="openai_edit")
+            if image_component:
+                chain.append(image_component)
+            if saved_path:
+                image_paths.append(saved_path)
             continue
 
         if b64_json:
-            saved_path = save_base64_image(b64_json, prefix="openai_edit")
-            image_paths.append(str(saved_path))
-            chain.append(Image.fromFileSystem(str(saved_path)))
+            image_component, saved_path = build_image_component(f"base64://{b64_json}", prefix="openai_edit")
+            if image_component:
+                chain.append(image_component)
+            if saved_path:
+                image_paths.append(saved_path)
 
     if len(chain) == 0:
         chain.append(Plain("没有内容生成!"))
 
     return chain, image_paths
+
 
 
 # 去除思考过程
@@ -312,33 +354,39 @@ def remove_think(content):
 # 解析图像返回结果    
 def decode_image_result(result):
     result = remove_think(result)
-    
-    arr = result.split('\n')
-    arr = [item for item in arr if item != ""]
-    
+    image_pattern = re.compile(r'!\[[^\]]*\]\((data:image/[^)]+|https?://[^)\s]+|base64://[^)\s]+)\)')
+
     chain = []
     contents = []
     images = []
-    for line in arr:
-        if '![图像' in line or '![生成的图像' in line  or '![image' in line:
-            pattern = r'(https?://[^\s<>"]+|www\.[^\s<>"]+)[)]+'
-            urls = re.findall(pattern, line)
-            if len(urls) > 0:
-                url = urls[0]
-                images.append(url)
-        else:
+
+    for raw_line in result.split('\n'):
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        matches = image_pattern.findall(line)
+        if matches:
+            images.extend(matches)
+            line = image_pattern.sub('', line).strip()
+
+        if line:
             contents.append(line)
-    
+
     if len(contents) > 0:
         content = '\n'.join(contents)
         chain.append(Plain(content))
-    for url in images:
-        chain.append(Image.fromURL(url))
-        
+
+    for image_ref in images:
+        image_component, _ = build_image_component(image_ref, prefix="openai_image")
+        if image_component:
+            chain.append(image_component)
+
     if len(chain) == 0:
         chain.append(Plain("没有内容生成!"))
-        
+
     return chain
+
 
 
 mobile_header = {'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
