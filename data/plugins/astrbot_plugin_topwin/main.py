@@ -1,35 +1,31 @@
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
-from astrbot.api.star import Context, Star, register
+import asyncio
+import json
+import re
+from pathlib import Path
+from typing import Any, cast
+
+import requests
 from astrbot.api import logger
-
-from astrbot.api.provider import ProviderRequest, LLMResponse, Provider
-import requests, re, html
-from astrbot.api.message_components import *
 from astrbot.api.all import *
+from astrbot.api.event import AstrMessageEvent, filter
+from astrbot.api.message_components import *
+from astrbot.api.provider import LLMResponse, ProviderRequest
+from astrbot.api.star import Context, Star, register
 
-from .lib import MySQL, Tools, OneNav, Stock
+from .lib import MySQL, Stock, Tools
 from .lib.object import Record as DbRecord
 from .lib.util import (
-    current_time,
     common_image,
-    openai_query,
-    dify_query,
-    format_formula,
-    decode_image_result,
-    move_image,
-    remove_think,
+    current_time,
     edit_image_with_openai,
+    format_formula,
+    move_image,
 )
 
-import asyncio
-from typing import Any, Dict, Optional, Union, cast
-import json
-
 # Used to track each user's image edit session.
-USER_STATES: Dict[str, Optional[float]] = {}
-USER_IMAGE_FILES: Dict[str, Optional[str]] = {}
-USER_LAST_IMAGES: Dict[str, Optional[str]] = {}
-
+USER_STATES: dict[str, float | None] = {}
+USER_IMAGE_FILES: dict[str, str | None] = {}
+USER_LAST_IMAGES: dict[str, str | None] = {}
 
 @register("topwin_tools", "P.Dragon", "P.Dragon个人的自定义工具插件", "0.1")
 class TopwinToolsPlugin(Star):
@@ -68,8 +64,9 @@ class TopwinToolsPlugin(Star):
 
         return normalized_prefixes or ["img"]
 
-    def extract_image_prompt(self, message: str) -> tuple[Optional[str], Optional[str]]:
+    def extract_image_prompt(self, message: str) -> tuple[str | None, str | None]:
         content = message.strip()
+
         if not content:
             return None, None
 
@@ -99,10 +96,315 @@ class TopwinToolsPlugin(Star):
 
         return normalized_prefixes or ["图生图"]
 
+    def _extract_images_from_message_chain(self, chain: Any) -> list[str]:
+        if hasattr(chain, "chain"):
+            chain = getattr(chain, "chain")
+        if not isinstance(chain, list):
+            return []
+
+        refs: list[str] = []
+        for comp in chain:
+            if isinstance(comp, dict):
+                if str(comp.get("type", "")).lower() != "image":
+                    continue
+                for key in (
+                    "url",
+                    "file",
+                    "path",
+                    "src",
+                    "image_url",
+                    "file_url",
+                    "pic_url",
+                ):
+                    value = comp.get(key)
+                    if isinstance(value, str) and value.strip():
+                        refs.append(value.strip())
+                continue
+
+            if isinstance(comp, Image) or comp.__class__.__name__.lower() == "image":
+                for attr in ("url", "file", "path", "src"):
+                    value = getattr(comp, attr, None)
+                    if isinstance(value, str) and value.strip():
+                        refs.append(value.strip())
+        return refs
+
+    def _extract_images_from_raw_message(self, raw: Any) -> list[str]:
+        refs: list[str] = []
+        if raw is None:
+            return refs
+
+        if isinstance(raw, str):
+            text = raw.strip()
+            if not text:
+                return refs
+            for match in re.findall(r"\[CQ:image,[^\]]*\]", text, flags=re.IGNORECASE):
+                key_match = re.search(
+                    r"url=([^,\]]+)", match, flags=re.IGNORECASE
+                ) or re.search(r"file=([^,\]]+)", match, flags=re.IGNORECASE)
+                if key_match:
+                    refs.append(key_match.group(1).strip())
+            try:
+                raw = json.loads(text)
+            except Exception:
+                return refs
+
+        def walk(obj: Any, depth: int = 0):
+            if depth > 10:
+                return
+            if isinstance(obj, dict):
+                obj_type = str(obj.get("type", "")).lower()
+                if "image" in obj_type:
+                    for key in (
+                        "file",
+                        "url",
+                        "path",
+                        "src",
+                        "image_url",
+                        "file_url",
+                        "pic_url",
+                    ):
+                        value = obj.get(key)
+                        if isinstance(value, str) and value.strip():
+                            refs.append(value.strip())
+                for key, value in obj.items():
+                    if key in {
+                        "file",
+                        "url",
+                        "path",
+                        "src",
+                        "image_url",
+                        "file_url",
+                        "pic_url",
+                    }:
+                        if isinstance(value, str) and value.strip():
+                            refs.append(value.strip())
+                    walk(value, depth + 1)
+                return
+            if isinstance(obj, list):
+                for item in obj:
+                    walk(item, depth + 1)
+
+        walk(raw)
+        return refs
+
+    def _extract_aiocqhttp_image_file_ids(self, raw: Any) -> list[str]:
+        ids: list[str] = []
+        if raw is None:
+            return ids
+
+        if isinstance(raw, str):
+            text = raw.strip()
+            if text:
+                for match in re.findall(
+                    r"\[CQ:image,[^\]]*\]", text, flags=re.IGNORECASE
+                ):
+                    key_match = re.search(r"file=([^,\]]+)", match, flags=re.IGNORECASE)
+                    if key_match:
+                        ids.append(key_match.group(1).strip())
+            try:
+                raw = json.loads(text) if text else None
+            except Exception:
+                return list(dict.fromkeys([item for item in ids if item]))
+
+        def walk(obj: Any, depth: int = 0):
+            if depth > 10:
+                return
+            if isinstance(obj, dict):
+                obj_type = str(obj.get("type", "")).lower()
+                if obj_type == "image":
+                    data = obj.get("data")
+                    if isinstance(data, dict):
+                        file_id = data.get("file")
+                        if file_id is not None:
+                            ids.append(str(file_id).strip())
+                    file_id = obj.get("file")
+                    if file_id is not None:
+                        ids.append(str(file_id).strip())
+                for value in obj.values():
+                    walk(value, depth + 1)
+                return
+            if isinstance(obj, list):
+                for item in obj:
+                    walk(item, depth + 1)
+
+        walk(raw)
+        return list(dict.fromkeys([item for item in ids if item]))
+
+    def _extract_reply_message_ids_from_event(
+        self, event: AstrMessageEvent
+    ) -> list[str]:
+        ids: list[str] = []
+        chain = getattr(getattr(event, "message_obj", None), "message", None)
+        if hasattr(chain, "chain"):
+            chain = getattr(chain, "chain")
+
+        if isinstance(chain, list):
+            for comp in chain:
+                if isinstance(comp, dict):
+                    if str(comp.get("type", "")).lower() == "reply":
+                        for key in ("message_id", "id"):
+                            value = comp.get(key)
+                            if isinstance(value, (str, int)):
+                                ids.append(str(value).strip())
+                else:
+                    if comp.__class__.__name__.lower() == "reply":
+                        for attr in ("message_id", "id"):
+                            value = getattr(comp, attr, None)
+                            if isinstance(value, (str, int)):
+                                ids.append(str(value).strip())
+
+        raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        if raw is None:
+            return list(dict.fromkeys([item for item in ids if item]))
+
+        if isinstance(raw, str):
+            text = raw.strip()
+            if text:
+                for match in re.findall(
+                    r"\[CQ:reply,[^\]]*\]", text, flags=re.IGNORECASE
+                ):
+                    key_match = re.search(r"id=([^,\]]+)", match, flags=re.IGNORECASE)
+                    if key_match:
+                        ids.append(key_match.group(1).strip())
+            try:
+                raw = json.loads(text) if text else None
+            except Exception:
+                return list(dict.fromkeys([item for item in ids if item]))
+
+        def walk(obj: Any, depth: int = 0):
+            if depth > 10:
+                return
+            if isinstance(obj, dict):
+                obj_type = str(obj.get("type", "")).lower()
+                if obj_type == "reply":
+                    data = obj.get("data")
+                    if isinstance(data, dict):
+                        reply_id = data.get("id") or data.get("message_id")
+                        if reply_id is not None:
+                            ids.append(str(reply_id).strip())
+                    reply_id = obj.get("id") or obj.get("message_id")
+                    if reply_id is not None:
+                        ids.append(str(reply_id).strip())
+                for value in obj.values():
+                    walk(value, depth + 1)
+                return
+            if isinstance(obj, list):
+                for item in obj:
+                    walk(item, depth + 1)
+
+        walk(raw)
+        return list(dict.fromkeys([item for item in ids if item]))
+
+    async def _call_aiocqhttp_action(
+        self, event: AstrMessageEvent, action: str, **params: Any
+    ) -> Any:
+        get_platform_name = getattr(event, "get_platform_name", None)
+        platform_name = ""
+        if callable(get_platform_name):
+            try:
+                platform_name = str(get_platform_name()).lower()
+            except Exception:
+                platform_name = ""
+
+        if platform_name != "aiocqhttp":
+            return None
+
+        bot = getattr(event, "bot", None)
+        api = getattr(bot, "api", None) if bot is not None else None
+        call_action = getattr(api, "call_action", None) if api is not None else None
+        if call_action is None:
+            return None
+
+        try:
+            result = await call_action(action, **params)
+        except Exception:
+            return None
+
+        if not isinstance(result, dict):
+            return result
+        return result.get("data", result)
+
+    async def _fetch_aiocqhttp_image_refs(
+        self, event: AstrMessageEvent, file_ids: list[str]
+    ) -> list[str]:
+        refs: list[str] = []
+        for file_id in file_ids[:6]:
+            data = await self._call_aiocqhttp_action(event, "get_image", file=file_id)
+            if not isinstance(data, dict):
+                continue
+            for key in ("file", "url", "path"):
+                value = data.get(key)
+                if isinstance(value, str) and value.strip():
+                    refs.append(value.strip())
+        return refs
+
+    async def _fetch_message_image_refs_by_id(
+        self, event: AstrMessageEvent, message_id: str
+    ) -> list[str]:
+        if not message_id:
+            return []
+
+        payload = await self._call_aiocqhttp_action(
+            event, "get_msg", message_id=message_id
+        )
+        if (not isinstance(payload, dict)) or (not payload):
+            try:
+                payload = await self._call_aiocqhttp_action(
+                    event, "get_msg", message_id=int(str(message_id))
+                )
+            except Exception:
+                payload = payload
+
+        if not payload:
+            return []
+
+        refs: list[str] = []
+        refs.extend(self._extract_images_from_raw_message(payload.get("message")))
+        refs.extend(self._extract_images_from_raw_message(payload))
+        refs.extend(
+            await self._fetch_aiocqhttp_image_refs(
+                event, self._extract_aiocqhttp_image_file_ids(payload)
+            )
+        )
+        return refs
+
+    async def collect_edit_image_refs(self, event: AstrMessageEvent) -> list[str]:
+        refs: list[str] = []
+        message_obj = getattr(event, "message_obj", None)
+        raw_message = getattr(message_obj, "raw_message", None)
+        message_chain = getattr(message_obj, "message", None)
+
+        refs.extend(self._extract_images_from_message_chain(message_chain))
+
+        message_id = getattr(message_obj, "message_id", None)
+        if message_id is not None:
+            refs.extend(
+                await self._fetch_message_image_refs_by_id(event, str(message_id))
+            )
+
+        refs.extend(self._extract_images_from_raw_message(raw_message))
+        refs.extend(
+            await self._fetch_aiocqhttp_image_refs(
+                event, self._extract_aiocqhttp_image_file_ids(raw_message)
+            )
+        )
+
+        reply_ids = self._extract_reply_message_ids_from_event(event)
+        for reply_id in reply_ids[:3]:
+            refs.extend(await self._fetch_message_image_refs_by_id(event, reply_id))
+
+        normalized_refs: list[str] = []
+        for ref in refs:
+            value = str(ref).strip()
+            if value:
+                normalized_refs.append(value)
+        return list(dict.fromkeys(normalized_refs))
+
     def extract_edit_image_prompt(
         self, message: str
-    ) -> tuple[Optional[str], Optional[str]]:
+    ) -> tuple[str | None, str | None]:
         content = message.strip()
+
         if not content:
             return None, None
 
@@ -298,13 +600,11 @@ class TopwinToolsPlugin(Star):
             }
         )
 
-        # fromFileSystem 需要用户的协议端和机器人端处于一个系统中。
-        music = Video.fromFileSystem(path="test.mp4")
-
         headers = {
             "Authorization": "Bearer Qweasd@12345",
             "Content-Type": "application/json",
         }
+
 
         response = requests.request("POST", url, headers=headers, data=payload)
         result = response.json()
@@ -350,11 +650,8 @@ class TopwinToolsPlugin(Star):
         print("handle_image_edit_request")
         state_key = self.get_edit_image_state_key(event)
 
-        image_file = ""
-        for component in event.message_obj.message:
-            if isinstance(component, Image):
-                image_file = component.file or ""
-                break
+        image_refs = await self.collect_edit_image_refs(event)
+        image_file = image_refs[0] if image_refs else ""
 
         if image_file:
             editimage_dir = self.get_editimage_dir()
@@ -365,12 +662,27 @@ class TopwinToolsPlugin(Star):
                 event.stop_event()
                 return
 
-            image_file = move_image(image_file, editimage_dir)
-            print("收到图像文件:", image_file[:100])
+            moved_image_file = move_image(image_file, editimage_dir)
+            if not moved_image_file:
+                yield event.plain_result(
+                    "读取引用图片失败，请重新发送或重新引用图片后再试。"
+                )
+                event.stop_event()
+                return
+
+            moved_path = Path(str(moved_image_file).strip())
+            if not moved_path.exists() or not moved_path.is_file():
+                yield event.plain_result(
+                    "读取引用图片失败，请重新发送或重新引用图片后再试。"
+                )
+                event.stop_event()
+                return
+
+            print("收到图像文件:", str(moved_path)[:100])
             timestamp = asyncio.get_running_loop().time()
             USER_STATES[state_key] = timestamp
-            USER_IMAGE_FILES[state_key] = image_file
-            USER_LAST_IMAGES[state_key] = image_file
+            USER_IMAGE_FILES[state_key] = str(moved_path)
+            USER_LAST_IMAGES[state_key] = str(moved_path)
 
             prefixes_text = " / ".join(self.get_edit_image_command_prefixes())
             yield event.plain_result(
@@ -421,9 +733,9 @@ class TopwinToolsPlugin(Star):
 
     @mysql.command("detail")
     async def mysql_detail(self, event: AstrMessageEvent, prompt: str = ""):
-        username = event.get_sender_id()
         result = self.mysql_handler.dispatch("detail", prompt)
         yield event.plain_result(f"{result}")
+
 
     @mysql.command("save")
     async def mysql_save(self, event: AstrMessageEvent, prompt: str = ""):
